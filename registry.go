@@ -1,125 +1,85 @@
-// X
+// Copyright 2014 Johan Rydberg.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package main
 
-import "github.com/hashicorp/serf/client"
-import "github.com/gorilla/mux"
-import "net/http"
 import "sync"
 import "time"
-import "fmt"
-import "log"
-import "encoding/json"
-import "io/ioutil"
+import "errors"
+//import "encoding/json"
+//import "io/ioutil"
 
-type JsonObject map[string]interface{}
-
-type Instance struct {
-    Formation string    `json: formation`
-    Service string      `json: service`
-    Instance string     `json: instance`
-}
+type JSONObject map[string]interface{}
 
 type Entry struct {
-    payload JsonObject
-    instance Instance
-    timestamp time.Time
+    Payload   JSONObject
+    Formation string
+    Identity  string
+    Timestamp time.Time
+}
+
+type IRegistry interface {
+    Query(formation, identity string) (*Entry, error)
+    Index(formation string) map[string]Entry
+    Update(formation, identity string, payload JSONObject)
 }
 
 type Registry struct {
-    sync.Mutex                    // lock for the registry
-    entries map[string]Entry      // array of entries
-    serf *client.RPCClient
+    sync.Mutex                  // lock for the registry
+    entries    []Entry
 }
 
-func NewRegistry(serf *client.RPCClient) *Registry {
-    return &Registry{sync.Mutex{}, make(map[string]Entry), serf}
+func NewRegistry() *Registry {
+    return &Registry{sync.Mutex{}, make([]Entry, 0, 1)}
 }
 
-func (reg *Registry) QueryFormationHandler(w http.ResponseWriter,
-    r *http.Request) {
-    var items map[string]JsonObject = make(map[string]JsonObject)
-
-    vars := mux.Vars(r)
-    formation := vars["formation"]
-
-    reg.Lock()
-    defer reg.Unlock()
-
-    for k, entry := range reg.entries {
-        if entry.instance.Formation == formation {
-            items[k] = entry.payload
+func (registry *Registry) query(formation, identity string) (*Entry, error) {
+    for _, entry := range registry.entries {
+        if entry.Formation == formation && entry.Identity == identity {
+            return &entry, nil
         }
     }
-
-    body, _ := json.Marshal(items)
-
-    w.WriteHeader(http.StatusOK)
-    w.Write(body)
+    return nil, errors.New("no such item")
 }
 
-func (reg *Registry) UpdateHandler(w http.ResponseWriter, r *http.Request) {
-    body, err := ioutil.ReadAll(r.Body)
-    if err != nil {
-        w.WriteHeader(http.StatusBadRequest)
-        return
-    }
-
-    var payload JsonObject
-    err = json.Unmarshal(body, &payload)
-    if err != nil {
-        w.WriteHeader(http.StatusBadRequest)
-        return
-    }
-
-    reg.serf.UserEvent("advertise", body, true)
+func (registry *Registry) Query(formation, identity string) (*Entry, error) {
+    registry.Lock()
+    defer registry.Unlock()
+    return registry.query(formation, identity)
 }
 
-func (reg *Registry) addEntryFromEvent(body []byte) {
-    var inst Instance
-    var payload JsonObject
+func (registry *Registry) Index(formation string) map[string]Entry {
+    registry.Lock()
+    defer registry.Unlock()
 
-    err := json.Unmarshal(body, &payload)
-    if err != nil {
-        return
-    }
-
-    err = json.Unmarshal(body, &inst)
-    if err != nil {
-        return
-    }
-
-    reg.Lock()
-    defer reg.Unlock()
-
-    key := fmt.Sprintf("%s.%s.%s", inst.Formation, inst.Service, inst.Instance)
-    reg.entries[key] = Entry{payload, inst, time.Now()}
-}
-
-func (reg *Registry) HandleEvents() {
-    input := make(chan map[string]interface{})
-    go reg.serf.Stream("", input)
-
-    for {
-        data := <- input
-        name, ok := data["Name"].(string)
-        if ok && name == "advertise" {
-            payload, _ := data["Payload"].([]byte)
-            reg.addEntryFromEvent(payload)
+    items := make(map[string]Entry)
+    for _, entry := range registry.entries {
+        if entry.Formation == formation {
+            items[entry.Identity] = entry
         }
     }
+    return items
 }
 
-func main() {
-    serf, err := client.NewRPCClient("127.0.0.1:7373")
-    if err != nil {
-        log.Fatal(err)
-    }
-    reg := NewRegistry(serf)
-    router := mux.NewRouter()
-    router.HandleFunc("/{formation}", reg.QueryFormationHandler).Methods("GET")
-    router.HandleFunc("/{formation}/{instance}", reg.UpdateHandler).Methods("PUT")
+func (registry *Registry) Update(formation, identity string, payload JSONObject) {
+    registry.Lock()
+    defer registry.Unlock()
 
-    go reg.HandleEvents()
-	http.ListenAndServe(":4100", router)
+    entry, err := registry.query(formation, identity)
+    if err != nil {
+        entry = &Entry{payload, formation, identity, time.Now()}
+        registry.entries = append(registry.entries, *entry)
+    }
+    entry.Timestamp = time.Now()
 }
