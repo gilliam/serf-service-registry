@@ -16,8 +16,10 @@ package main
 
 import "github.com/hashicorp/serf/client"
 import "github.com/gorilla/mux"
+import "github.com/gorilla/handlers"
 import "net/http"
 import "log"
+import "os"
 
 
 func main() {
@@ -34,5 +36,5 @@ func main() {
     router.HandleFunc("/{formation}/{instance}", api.Update).Methods("PUT")
 
     go serfCommand.Handle(registry)
-    http.ListenAndServe(":4100", router)
+    http.ListenAndServe(":3222", handlers.CombinedLoggingHandler(os.Stdout, router))
 }

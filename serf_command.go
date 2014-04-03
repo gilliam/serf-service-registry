@@ -18,6 +18,7 @@ import "github.com/hashicorp/serf/client"
 import "fmt"
 import "encoding/json"
 import "strings"
+import "log"
 
 type ICommand interface {
     Update(formation, identity string, payload JSONObject)
@@ -34,11 +35,14 @@ func NewSerfCommand(client *client.RPCClient) *SerfCommand {
 func (command *SerfCommand) Update(formation, identity string, payload JSONObject) {
     data, _ := json.Marshal(payload)
     body := fmt.Sprintf("%s:%s:%s", formation, identity, data)
-    command.client.UserEvent("advertise", []byte(body), true)
+    err := command.client.UserEvent("advertise", []byte(body), false)
+    if err != nil {
+        log.Printf("GOT ERROR ON SENDING: %s\n", err.Error())
+    }
 }
 
 func (command *SerfCommand) Handle(registry IRegistry) {
-    input := make(chan map[string]interface{})
+    input := make(chan map[string]interface{}, 32)
     go command.client.Stream("", input)
 
     for {
